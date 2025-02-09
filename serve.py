@@ -48,6 +48,10 @@ def refresh_rss(url):
         if link_element is None:
             link_element = item.find('link', namespaces={'atom': 'http://www.w3.org/2005/Atom'})
 
+        guid_element = item.find('guid')
+        if guid_element is not None:
+            guid_element.text = "phh-" + guid_element.text
+
         if title_element is not None and link_element is not None:
             original_title = title_element.text
             modified_title = new_title(link_element.text, original_title)
