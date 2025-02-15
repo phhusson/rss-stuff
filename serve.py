@@ -15,16 +15,25 @@ import datetime
 app = Flask(__name__)
 
 # Hashmap of feed URL to modified RSS feed content
+retitle_cache = {}
 feed_cache = {}
 
 # Fetch the original RSS feed
 def fetch_rss(url):
+    if url in feed_cache:
+        o = feed_cache[url]
+        if datetime.datetime.now() - o['time'] < datetime.timedelta(minutes=15):
+            print(f"Cache hit for {url}")
+            return o['content']
+
+    print(f"Fetching {url}")
     response = requests.get(url)
     response.raise_for_status()
+    feed_cache[url] = {'content': response.text, 'time': datetime.datetime.now()}
     return response.text
 
 def refresh_rss(url):
-    global feed_cache
+    global retitle_cache
     print(f"Refreshing {url}")
     input_rss_file = fetch_rss(url)
     # Parse the input RSS feed
@@ -70,8 +79,18 @@ def refresh_rss(url):
     tree = ET.ElementTree(root)
     # Write the modified XML tree to string
     modified_rss = ET.tostring(root, encoding='utf-8', xml_declaration=True)
-    feed_cache[url] = modified_rss
+    retitle_cache[url] = modified_rss
     print(f"Refreshed {url}")
+
+def resfresh_rss_with_retry():
+    try:
+        for url in retitle_cache:
+            refresh_rss(url)
+    except Exception as e:
+        print(f"Failed to refresh {url}: {e}")
+        # Dump the whole exception stacktrace
+        import traceback
+        traceback.print_exc()
 
 # Declare the scheduler
 scheduler = BackgroundScheduler()
@@ -87,12 +106,12 @@ def get_jobs():
 # In its current form, it will simply download the RSS feed and return it
 @app.route('/<path:url>')
 def get_rss(url):
-    global feed_cache
+    global retitle_cache
     # Prepend https://
     url = 'https://' + url
-    if url in feed_cache:
+    if url in retitle_cache:
         print(f"Cache hit for {url}")
-        return Response(feed_cache[url], mimetype='text/xml')
+        return Response(retitle_cache[url], mimetype='text/xml')
     
     print(f"Fetching {url}")
     rss = fetch_rss(url)
@@ -104,14 +123,11 @@ def get_rss(url):
     for item in channel.findall('item'):
         channel.remove(item)
     rss = ET.tostring(root, encoding='utf-8', xml_declaration=True)
-    feed_cache[url] = rss
-
-    # Schedule the next fetch in 1 hour
-    job = scheduler.add_job(refresh_rss, 'interval', hours=1, args=[url], start_date = datetime.datetime.now() + datetime.timedelta(seconds=5))
-    print(f"Scheduled {url} for refresh at {job.next_run_time}")
+    retitle_cache[url] = rss
 
     return Response(rss, mimetype='text/xml')
 
+job = scheduler.add_job(resfresh_rss_with_retry, 'interval', minutes=1, args=[])
 atexit.register(lambda: scheduler.shutdown())
 
 # Run the server
